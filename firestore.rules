@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function uidUnchanged() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('userId' in request.resource.data) || request.resource.data.userId == resource.data.userId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return data.keys().hasOnly(['firstName', 'lastName', 'email', 'createdAt']) &&
+             data.firstName is string && data.firstName.size() < 100 &&
+             data.lastName is string && data.lastName.size() < 100 &&
+             data.email is string && isValidEmail(data.email) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidChatSession(data) {
+      return data.keys().hasOnly(['userId', 'title', 'createdAt', 'updatedAt']) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasOnly(['chatId', 'userId', 'role', 'content', 'attachments', 'createdAt']) &&
+             data.chatId is string && data.chatId.size() > 0 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.role in ['user', 'assistant'] &&
+             data.content is string && data.content.size() < 50000 &&
+             (!('attachments' in data) || data.attachments is list) &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false; // Default deny
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
+    match /chats/{chatId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidChatSession(request.resource.data);
+      allow update: if isDocOwner() && isValidChatSession(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt && uidNotModified();
+      allow delete: if isDocOwner();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidChatMessage(request.resource.data);
+      allow update: if isDocOwner() && 
+                       isValidChatMessage(request.resource.data) &&
+                       request.resource.data.chatId == resource.data.chatId &&
+                       request.resource.data.role == resource.data.role &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       uidNotModified();
+      allow delete: if isDocOwner();
+    }
+  }
+}
